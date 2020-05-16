@@ -9,7 +9,6 @@ import os
 
 PORT    =   80
 HOST    =   "localhost"
-LOCK    =   threading.Lock()
 
 
 # CLI LOADER
@@ -42,10 +41,21 @@ class CliLoader:
 # SERVE DIRECTORY AND PATHS
 
 class Path:
-    pass
-
-class Directory:
-    pass
+    
+    ALL_PATHS = {}
+    
+    def __init__(self, url, function):
+        """A new path"""
+        self._url       = url
+        self._function  = function
+        self.__class__.ALL_PATHS[self._url] = self._function
+        
+    @classmethod
+    def find(cls, url):
+        """Find the url. Return None if not found"""
+        if url in cls.ALL_PATHS:
+            return cls.ALL_PATHS[url]
+        return None
 
 
 # HTTP
@@ -168,8 +178,15 @@ class ConnectionThread(threading.Thread):
     def run(self):
         """Run the thread"""
         datas = self._connexion.recv(1024 * 20)
-        c = HttpPacket.read(datas)
-        answer = _HttpAnswer.default_error_msg().as_bytes()
+        request = HttpPacket.read(datas)
+        if f := Path.find(request.path.decode("utf-8")) is not None:
+            content = f()
+            answer = HttpPacket.new()
+            answer.set_answer_code(_HttpAnswer.SUCCESS)
+            answer.set_headers({"server": "Horus"})
+            answer.set_content(content)
+        else:
+            answer = _HttpAnswer.default_error_msg().as_bytes()
         self._connexion.sendall(answer)
         self._connexion.close()
     
@@ -243,6 +260,14 @@ class Server:
         except KeyboardInterrupt as error:
             self.close()
             
+    # HANDLE PATHS
+    
+    def path(self, url):
+        """Return a function"""
+        def wrapper(function):
+            function()
+        return Path(url, wrapper)
+            
     # ERRORS AND CLOSE
         
     def close(self):
@@ -277,6 +302,11 @@ class Server:
         
 if __name__ == "__main__":
     app = Server(HOST, PORT)
+    
+    @app.path("/")
+    def func():
+        return "Home page"
+    
     app.run_forever()
         
         
