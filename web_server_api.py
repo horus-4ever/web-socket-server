@@ -3,7 +3,8 @@ import sys
 import time
 import threading
 import os
-
+import logging
+import datetime
 
 # CONSTANTS
 
@@ -44,11 +45,24 @@ class Path:
     
     ALL_PATHS = {}
     
-    def __init__(self, url, function):
+    def __init__(self, basepath, url, file = None):
+        self.PATH = basepath
+        self._url = url
+        self._file = file
+        
+    def __call__(self, function):
         """A new path"""
-        self._url       = url
         self._function  = function
-        self.__class__.ALL_PATHS[self._url] = self._function
+        # our wrapper
+        def wrapper():
+            if self._file is not None and os.path.exists(os.path.join(self.PATH, self._file)):
+                with open(self._file, "rb") as doc:
+                    return doc.read()
+            else:
+                return self._function()
+        # because it is a decorator, return the new function
+        self.__class__.ALL_PATHS[self._url] = wrapper
+        return wrapper
         
     @classmethod
     def find(cls, url):
@@ -68,7 +82,7 @@ class _HttpRequest:
         
     def parse(self, datas: bytes):
         """Parse and return a tuple containing request, header, content"""
-        header, content = datas.split(b"\r\n\r\n")
+        header, *content = datas.split(b"\r\n\r\n")
         request, *headers = header.split(b"\r\n")
         # then, split to get method, path and httptype
         self._request = request
@@ -179,15 +193,18 @@ class ConnectionThread(threading.Thread):
         """Run the thread"""
         datas = self._connexion.recv(1024 * 20)
         request = HttpPacket.read(datas)
-        if f := Path.find(request.path.decode("utf-8")) is not None:
+        logging.info(f"REQUEST : {request.request.decode('utf-8')}")
+        if (f := Path.find(request.path.decode("utf-8"))) is not None:
+            logging.info("200 : Path found")
             content = f()
             answer = HttpPacket.new()
             answer.set_answer_code(_HttpAnswer.SUCCESS)
             answer.set_headers({"server": "Horus"})
             answer.set_content(content)
         else:
-            answer = _HttpAnswer.default_error_msg().as_bytes()
-        self._connexion.sendall(answer)
+            logging.error("404 : Path not found")
+            answer = _HttpAnswer.default_error_msg()
+        self._connexion.sendall(answer.as_bytes())
         self._connexion.close()
     
     def kill(self):
@@ -231,10 +248,15 @@ class Server:
     
     INIT_CONNEXION_ERROR    = "Initialisation of connexion failed..."
     
-    def __init__(self, host, port):
-        """The main loop"""
+    def __init__(self, argv, host, port):
+        self.PATH           = os.path.dirname(argv[0])
         self._host          = host
         self._port          = port
+        # logs
+        self.LOGS_PATH     = os.path.join(self.PATH, ".logs")
+        self.DATE          = datetime.datetime.now()
+        logging.basicConfig(filename = repr(self.DATE), filemode = "w")
+        logging.info(f"Server started at {self.DATE}")
         # try to initialize a new connection
         self._connexion    = self._init_connection(self._host, self._port)
         self._server       = ServerThread(self._connexion, self)
@@ -262,11 +284,9 @@ class Server:
             
     # HANDLE PATHS
     
-    def path(self, url):
+    def path(self, *args, **kwargs):
         """Return a function"""
-        def wrapper(function):
-            function()
-        return Path(url, wrapper)
+        return Path(self.PATH, *args, **kwargs)
             
     # ERRORS AND CLOSE
         
@@ -301,11 +321,11 @@ class Server:
         
         
 if __name__ == "__main__":
-    app = Server(HOST, PORT)
+    app = Server(sys.argv, HOST, PORT)
     
-    @app.path("/")
+    @app.path("/", file = "test.html")
     def func():
-        return "Home page"
+        return "hello"
     
     app.run_forever()
         
