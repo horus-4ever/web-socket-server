@@ -114,6 +114,7 @@ class _HttpAnswer:
     
     SUCCESS = "HTTP/1.1 200 OK"
     ERROR   = "HTTP/1.1 404 Not Found"
+    SERVER_CLOSED = "HTTP/1.1 503 Server closed"
     
     def __init__(self):
         """Create a new answer"""
@@ -161,6 +162,14 @@ class _HttpAnswer:
         answer.set_headers({"server": "Horus",})
         answer.set_content("Not found... :/")
         return answer
+    
+    @classmethod
+    def server_closed_msg(cls):
+        answer = _HttpAnswer()
+        answer.set_answer_code(cls.SERVER_CLOSED)
+        answer.set_headers({"server": "Horus",})
+        answer.set_content("Server closed :/")
+        return answer
 
 
 # HTTP PACKET
@@ -194,16 +203,18 @@ class ConnectionThread(threading.Thread):
         datas = self._connexion.recv(1024 * 20)
         request = HttpPacket.read(datas)
         logging.info(f"REQUEST : {request.request.decode('utf-8')}")
-        if (f := Path.find(request.path.decode("utf-8"))) is not None:
+        if (f := Path.find(request.path.decode("utf-8"))) is not None and self._alive:
             logging.info("200 : Path found")
             content = f()
             answer = HttpPacket.new()
             answer.set_answer_code(_HttpAnswer.SUCCESS)
             answer.set_headers({"server": "Horus"})
             answer.set_content(content)
-        else:
+        elif self._alive:
             logging.error("404 : Path not found")
             answer = _HttpAnswer.default_error_msg()
+        else:
+            answer = _HttpAnswer.server_closed_msg()
         self._connexion.sendall(answer.as_bytes())
         self._connexion.close()
     
@@ -227,6 +238,8 @@ class ServerThread(threading.Thread):
         """Run the thread"""
         while self._alive:
             client = self._connexion.accept()
+            if not self._alive:
+                break
             thread = ConnectionThread(client, self)
             self._threads.append(thread)
             thread.start()
@@ -254,8 +267,10 @@ class Server:
         self._port          = port
         # logs
         self.LOGS_PATH     = os.path.join(self.PATH, ".logs")
+        if not os.path.exists(self.LOGS_PATH):
+            os.mkdir(".logs")
         self.DATE          = datetime.datetime.now()
-        logging.basicConfig(filename = repr(self.DATE), filemode = "w")
+        logging.basicConfig(filename = os.path.join(self.LOGS_PATH, repr(self.DATE)), filemode = "w")
         logging.info(f"Server started at {self.DATE}")
         # try to initialize a new connection
         self._connexion    = self._init_connection(self._host, self._port)
